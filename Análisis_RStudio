@@ -1,0 +1,711 @@
+# =======================================================
+# PIPELINE DE EXPRESIÓN DIFERENCIAL DE sRNAs (DESeq2) - 
+# =======================================================
+# =======================================================
+# 0. INSTALACIÓN DE PAQUETES PARA EL TFM
+# =======================================================
+
+# Instalar paquetes estándar (CRAN)
+paquetes_cran <- c("ggplot2", "pheatmap", "UpSetR", "BiocManager")
+nuevos_cran <- paquetes_cran[!(paquetes_cran %in% installed.packages()[,"Package"])]
+if(length(nuevos_cran)) install.packages(nuevos_cran)
+
+# Instalar paquetes bioinformáticos (Bioconductor)
+# Usamos BiocManager que acabamos de instalar arriba
+paquetes_bioc <- c("DESeq2", "topGO")
+nuevos_bioc <- paquetes_bioc[!(paquetes_bioc %in% installed.packages()[,"Package"])]
+if(length(nuevos_bioc)) BiocManager::install(nuevos_bioc, update = FALSE)
+
+cat("\n¡Instalación completada con éxito!\n")
+
+# Cargar librerías
+library(DESeq2)    # Motor estadístico para sRNAs diferenciales
+library(ggplot2)   # Para generar el gráfico PCA
+library(pheatmap)  # Para generar los mapas de calor (heatmaps)
+library(UpSetR)    # Para el gráfico de intersección de genes
+library(topGO)     # Para el análisis de enriquecimiento funcional GO
+
+cat("\n¡Todas las librerías cargadas correctamente! Listos para empezar.\n")
+
+# ------------------------------------------------------------------------------
+# 1. CARGA DE DATOS DE PARTIDA
+# ------------------------------------------------------------------------------
+cat(">>>> Cargando matrices de datos...\n")
+# Cargar la matriz de conteos y el archivo de diseño experimental
+conteos_total   <- read.table("matriz_final.txt", header = TRUE, row.names = 1, sep = "\t", check.names = FALSE)
+muestras_total  <- read.table("samples.txt", header = TRUE, row.names = 1, sep = "\t", check.names = FALSE)
+
+# Alineación crítica: Reordenar las columnas de la matriz para que coincidan EXACTAMENTE con las filas del diseño
+conteos_total <- conteos_total[, rownames(muestras_total)]
+
+# Control de calidad inicial
+if(all(rownames(muestras_total) == colnames(conteos_total))) {
+  cat("¡Excelente! Los nombres y el orden de las muestras coinciden a la perfección.\n\n")
+} else {
+  stop("ERROR: Las muestras no coinciden entre la matriz y el archivo de diseño.")
+}
+# ===================================================================
+# COMPARACIÓN 1: FENOTIPO BASAL (Resistente vs Susceptible en plantas sanas)
+# Objetivo: Identificar sRNAs implicados en la inmunidad constitutiva/basal.
+# ===================================================================
+cat(">>>> INICIANDO COMPARACIÓN 1: Fenotipo Basal (R vs S en plantas sanas)...\n")
+
+# 1.1. Submuestreo: Filtrar para quedarnos únicamente con plantas libres de virus (PPV == negative)
+muestras_basal <- subset(muestras_total, PPV == "negative")
+conteos_basal  <- conteos_total[, rownames(muestras_basal)]
+
+# 1.2. Configuración de Factores (Fijamos el Fenotipo Susceptible 'S' como el control/referencia)
+muestras_basal$phenotype <- factor(muestras_basal$phenotype, levels = c("S", "R"))
+
+# 1.3. Creación del objeto DESeq2
+dds_basal <- DESeqDataSetFromMatrix(countData = conteos_basal,
+                                    colData = muestras_basal,
+                                    design = ~ phenotype)
+
+# 1.4. Filtrado de bajo conteo (Mantenemos sRNAs con al menos 10 lecturas acumuladas)
+keep_basal <- rowSums(counts(dds_basal)) >= 10
+dds_basal  <- dds_basal[keep_basal, ]
+
+# 1.5. Ejecución del análisis estadístico
+dds_basal <- DESeq(dds_basal)
+
+# 1.6. Extracción y almacenamiento de resultados globales
+res_basal <- results(dds_basal, contrast = c("phenotype", "R", "S"))
+write.csv(as.data.frame(res_basal), file = "Resultados_Globales_Fenotipo_Basal.csv")
+
+# 1.7. Aislamiento de sRNAs Significativos (FDR / padj < 0.05 y Cambio de expresión de al menos 2 veces)
+res_basal_signif <- subset(res_basal, padj < 0.05 & abs(log2FoldChange) >= 1)
+write.csv(as.data.frame(res_basal_signif), file = "sRNAs_Significativos_Fenotipo_Basal.csv")
+
+cat("--> Comparación 1 completada con éxito.\n")
+cat("    Total sRNAs significativos basales detectados:", nrow(res_basal_signif), "\n\n")
+#====================================================================
+# COMPARACIÓN 2: RESPUESTA A LA INFECCIÓN VIRAL (Infectado vs Sano en Susceptibles)
+# Objetivo: Descubrir qué sRNAs se activan o reprimen drásticamente por el ataque del virus.
+# ===================================================================
+cat(">>>> INICIANDO COMPARACIÓN 2: Respuesta a la Infección (Positive vs Negative en Susceptibles)...\n")
+
+# 2.1. Submuestreo: Filtrar para quedarnos únicamente con plantas de fenotipo Susceptible (CA y GOCA)
+muestras_inf <- subset(muestras_total, phenotype == "S")
+conteos_inf  <- conteos_total[, rownames(muestras_inf)]
+
+# 2.2. Configuración de Factores (Fijamos el estado libre de virus 'negative' como el control/referencia)
+muestras_inf$PPV <- factor(muestras_inf$PPV, levels = c("negative", "positive"))
+conteos_inf[is.na(conteos_inf)] <- 0
+# 2.3. Creación del objeto DESeq2
+dds_inf <- DESeqDataSetFromMatrix(countData = conteos_inf,
+                                  colData = muestras_inf,
+                                  design = ~ PPV)
+
+# 2.4. Filtrado de bajo conteo (Mantenemos sRNAs con al menos 10 lecturas acumuladas)
+keep_inf <- rowSums(counts(dds_inf)) >= 10
+dds_inf  <- dds_inf[keep_inf, ]
+
+# 2.5. Ejecución del análisis estadístico
+dds_inf <- DESeq(dds_inf)
+
+# 2.6. Extracción y almacenamiento de resultados globales
+res_inf <- results(dds_inf, contrast = c("PPV", "positive", "negative"))
+write.csv(as.data.frame(res_inf), file = "Resultados_Globales_Infeccion_Viral.csv")
+
+# 2.7. Aislamiento de sRNAs Significativos (FDR / padj < 0.05 y Cambio de expresión de al menos 2 veces)
+res_inf_signif <- subset(res_inf, padj < 0.05 & abs(log2FoldChange) >= 1)
+write.csv(as.data.frame(res_inf_signif), file = "sRNAs_Significativos_Infeccion_Viral.csv")
+
+cat("--> Comparación 2 completada con éxito.\n")
+cat("    Total sRNAs significativos por infección detectados:", nrow(res_inf_signif), "\n\n")
+
+cat("==============================================================\n")
+cat("¡PROCESAMIENTO TERMINADO! Revisa tu carpeta de trabajo para ver tus archivos .csv\n")
+cat("==============================================================\n")
+# ===================================================================
+# 3. CONTROL DE CALIDAD GLOBAL (QC)
+#====================================================================
+cat(">>>> INICIANDO CONTROL DE CALIDAD (QC)...\n")
+library(ggplot2)
+library(pheatmap)
+
+# 3.1. Crear un objeto global solo para visualizar (blind = TRUE para no sesgar por el diseño)
+conteos_total[is.na(conteos_total)] <- 0
+dds_global <- DESeqDataSetFromMatrix(countData = conteos_total,
+                                     colData = muestras_total,
+                                     design = ~ 1)
+vsd <- varianceStabilizingTransformation(dds_global, blind = TRUE)
+
+if (!dir.exists("QC_Plots")) dir.create("QC_Plots")
+
+# 3.2. Dispersión global
+png("QC_Plots/dispersion_plot.png")
+# Calculamos dispersión rápida solo para el plot
+dds_global <- estimateSizeFactors(dds_global)
+dds_global <- estimateDispersions(dds_global)
+plotDispEsts(dds_global, main="Dispersión estimada de los sRNAs")
+dev.off()
+
+# 3.3. PCA (Análisis de Componentes Principales) Personalizado
+# Primero, asegúrate de tener instalada y cargada la librería ggrepel
+if(!require(ggrepel)) install.packages("ggrepel")
+library(ggrepel)
+
+# 1. Extraemos los datos calculados del PCA sin dibujarlos directamente
+pcaData <- plotPCA(vsd, intgroup = c("phenotype", "PPV"), returnData = TRUE)
+
+# Nota: DESeq2 guarda automáticamente el nombre de cada muestra (CA_1, GOCA_3, etc.) en una columna llamada "name" dentro de este objeto pcaData.
+
+# 2. Calculamos los porcentajes de varianza para los ejes (opcional, pero robustece el gráfico)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+# 3. Construimos el gráfico con ggplot2 añadiendo las etiquetas de texto
+pca_custom <- ggplot(pcaData, aes(x = PC1, y = PC2, color = phenotype, shape = PPV)) +
+  geom_point(size = 4) + # Dibuja los puntos biológicos un poco más grandes
+  geom_text_repel(aes(label = name), 
+                  size = 3.5,            # Tamaño de la fuente de la accesión
+                  fontface = "bold",     # Texto en negrita para facilitar lectura
+                  box.padding = 0.5,     # Espacio para evitar que tape el punto
+                  point.padding = 0.3,
+                  show.legend = FALSE) + # Evita que meta una "a" fea en la leyenda
+  labs(title = "PCA de muestras de Albaricoquero",
+       x = paste0("PC1: ", percentVar[1], "% varianza explicada"),
+       y = paste0("PC2: ", percentVar[2], "% varianza explicada")) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14, hjust = 0.5))
+
+# 4. Exportamos el nuevo gráfico interactivo a tu carpeta de Control de Calidad
+png("QC_Plots/PCA_plot_etiquetado.png", width = 800, height = 600, res = 120)
+print(pca_custom)
+dev.off()
+
+# 3.4. Mapa de calor de distancias (Heatmap)
+sampleDistMatrix <- as.matrix(dist(t(assay(vsd))))
+rownames(sampleDistMatrix) <- colnames(vsd)
+colnames(sampleDistMatrix) <- colnames(vsd)
+
+png("QC_Plots/sample_distance_heatmap.png", width = 1000, height = 1000)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = "euclidean",
+         clustering_distance_cols = "euclidean",
+         main = "Distancia Euclidiana entre muestras")
+dev.off()
+
+# 3.5. Boxplot y Densidad
+png("QC_Plots/boxplot_log2_expression.png", width=1000)
+boxplot(assay(vsd), las=2, main="Boxplot de expresión log2 (VST)", ylab="log2(counts)", col=rainbow(ncol(vsd)))
+dev.off()
+
+png("QC_Plots/density_log2_expression.png")
+plot(density(assay(vsd)[,1]), col=1, lwd=2, xlab="log2(counts)", main="Densidad de expresión por muestra", ylim=c(0, 0.3))
+for (i in 2:ncol(vsd)) {
+  lines(density(assay(vsd)[,i]), col=i, lwd=2)
+}
+dev.off()
+
+cat("--> Gráficos de QC generados en la carpeta 'QC_Plots'.\n\n")
+
+# ===================================================================
+# 4. EXPORTACIÓN DE UP Y DOWN REGULADOS
+# ===================================================================
+# Función para separar los que se sobreexpresan (UP) de los reprimidos (DOWN)
+guardar_up_down <- function(res_df, base_name) {
+  up <- subset(res_df, log2FoldChange > 0)
+  down <- subset(res_df, log2FoldChange < 0)
+  write.csv(up, paste0(base_name, "_UP.csv"))
+  write.csv(down, paste0(base_name, "_DOWN.csv"))
+}
+
+guardar_up_down(as.data.frame(res_basal_signif), "Fenotipo_Basal")
+guardar_up_down(as.data.frame(res_inf_signif), "Infeccion_Viral")
+
+# ==================================================================
+# 5. GRÁFICO UPSET (INTERSECCIÓN DE sRNAs)
+# ===================================================================
+cat(">>>> GENERANDO GRÁFICO UPSET...\n")
+# if (!requireNamespace("UpSetR", quietly = TRUE)) install.packages("UpSetR")
+library(UpSetR)
+
+# Lista con los sRNAs diferencialmente expresados por cada comparación
+deg_list <- list(
+  Resistencia_Basal = rownames(res_basal_signif),
+  Respuesta_Infeccion = rownames(res_inf_signif)
+)
+
+all_genes <- unique(unlist(deg_list))
+df_upset <- data.frame(Gene = all_genes)
+
+for (comp in names(deg_list)) {
+  df_upset[[comp]] <- ifelse(df_upset$Gene %in% deg_list[[comp]], 1, 0)
+}
+
+upset_input <- df_upset[, -1]
+
+png("QC_Plots/upset_plot_comparaciones.png", width = 800, height = 600)
+upset(
+  upset_input,
+  nsets = length(deg_list),
+  order.by = "freq",
+  decreasing = TRUE,
+  main.bar.color = "steelblue",
+  sets.bar.color = "skyblue",
+  text.scale = 1.5,
+  point.size = 3,
+  line.size = 1,
+  sets.x.label = "sRNAs significativos",
+  mainbar.y.label = "sRNAs compartidos"
+)
+dev.off()
+cat("--> Gráfico UpSet generado.\n\n")
+
+# ===================================================================
+# 5.1 UPSET PLOT POR ACCESIÓN (CA, GO, GOCA, DRMN)
+# ===================================================================
+cat(">>>> GENERANDO UPSET PLOT POR ACCESIÓN...\n")
+
+# 1. Identificar accesiones únicas
+accesiones <- unique(as.character(muestras_total$accesion))
+
+# 2. NUEVA LÓGICA: Filtrar por presencia real en las muestras de cada accesión
+lista_sRNAs_por_accesion <- list()
+
+for (a in accesiones) {
+  # Seleccionar muestras de la accesión
+  muestras_a <- rownames(subset(muestras_total, accesion == a))
+  
+  # Seleccionamos la matriz de conteos solo para estas muestras
+  conteos_a <- conteos_total[, muestras_a]
+  
+  # Filtramos sRNAs que:
+  # A) Son significativos globalmente (están en res_basal_signif)
+  # B) Tienen conteos > 0 en alguna de las muestras de esta accesión
+  sRNAs_signif_globales <- rownames(res_basal_signif)
+  sig_a <- sRNAs_signif_globales[rowSums(conteos_a) > 0]
+  
+  lista_sRNAs_por_accesion[[a]] <- sig_a
+}
+
+# 3. Preparar el formato binario para UpSetR
+all_sRNAs_acc <- unique(unlist(lista_sRNAs_por_accesion))
+df_upset_acc <- data.frame(sRNA = all_sRNAs_acc)
+
+for (a in accesiones) {
+  df_upset_acc[[a]] <- ifelse(df_upset_acc$sRNA %in% lista_sRNAs_por_accesion[[a]], 1, 0)
+}
+
+# 4. Generar el gráfico
+png("QC_Plots/upset_plot_por_accesion.png", width = 800, height = 600)
+upset(
+  df_upset_acc,
+  nsets = length(accesiones),
+  order.by = "freq",
+  main.bar.color = "darkgoldenrod",
+  sets.bar.color = "gold3",
+  text.scale = 1.3,
+  mainbar.y.label = "sRNAs compartidos por accesión",
+  sets.x.label = "Total sRNAs significativos por accesión"
+)
+dev.off()
+
+cat("--> Gráfico UpSet por accesión corregido generado en 'QC_Plots/upset_plot_por_accesion.png'.\n")
+
+# ===================================================================
+# 6. EXTRACCIÓN DE GENES DIANA (Desde psRNATarget)
+# ===================================================================
+cat(">>>> PROCESANDO RESULTADOS DE psRNATarget...\n")
+
+# 6.1 Leer el archivo de resultados (ignoramos la primera línea que empieza por #)
+# Asegúrate de que el nombre del archivo coincide con el que tienes en tu carpeta
+dianas_raw <- read.table("psRNATargetJob-1783076072097223.txt", 
+                         header = TRUE, 
+                         sep = "\t", 
+                         comment.char = "#", 
+                         quote = "")
+
+# 6.2 Filtrar interacciones fiables (Expectation <= 3.0)
+dianas_filtradas <- subset(dianas_raw, Expectation <= 3)
+cat("Interacciones sRNA-Diana fiables (Expectation <= 3):", nrow(dianas_filtradas), "\n")
+
+# 6.3 Limpiar los nombres de los genes diana
+# Quitamos el sufijo ".t1.p1" (o similar) para quedarnos solo con el gen base
+# gsub("\\.t.*", "" significa: "busca un punto seguido de una 't' y borra todo lo que haya detrás"
+dianas_filtradas$Gene_Base <- gsub("\\.t.*", "", dianas_filtradas$Target_Acc.)
+
+# Extraemos la lista única de genes diana a silenciar
+genes_diana_unicos <- unique(dianas_filtradas$Gene_Base)
+cat("Total de genes diana únicos descubiertos:", length(genes_diana_unicos), "\n")
+
+# Guardamos esta lista limpia para anexarla al TFM
+write.csv(dianas_filtradas, "Dianas_Filtradas_Alta_Confianza_exp3.csv", row.names = FALSE)
+
+# ===================================================================
+# 7. PROCESAMIENTO Y FILTRADO DE GENES DIANA (psRNATarget)
+#===================================================================
+cat(">>>> INICIANDO PUNTO 7: Procesamiento de dianas de psRNATarget...\n")
+
+# 7.1. Cargar el archivo global de psRNATarget
+dianas_raw <- read.table("psRNATargetJob-1783076072097223.txt", 
+                         header = TRUE, 
+                         sep = "\t", 
+                         comment.char = "#", 
+                         quote = "")
+
+# 7.2. Aplicar filtro de Expectation <= 5.0
+dianas_filtradas <- subset(dianas_raw, Expectation <= 5.0)
+
+# 7.3. Limpiar los nombres de los genes (quitar sufijos .t1.p1)
+dianas_filtradas$Gene_Base <- gsub("\\.t.*", "", dianas_filtradas$Target_Acc.)
+
+# 7.4. SEPARACIÓN AUTOMÁTICA POR COMPARACIÓN BIOLÓGICA
+# Cruzamos el archivo de psRNATarget con tus sRNAs significativos del punto 2 y 3
+
+# Dianas para Comparación 1 (Fenotipo Basal)
+dianas_basal <- subset(dianas_filtradas, miRNA_Acc. %in% rownames(res_basal_signif))
+genes_diana_basal <- unique(dianas_basal$Gene_Base)
+
+# Dianas para Comparación 2 (Respuesta Infección)
+dianas_inf <- subset(dianas_filtradas, miRNA_Acc. %in% rownames(res_inf_signif))
+genes_diana_inf <- unique(dianas_inf$Gene_Base)
+
+cat("--> Filtrado completado:\n")
+cat("    Genes diana únicos para Fenotipo Basal (R vs S):", length(genes_diana_basal), "\n")
+cat("    Genes diana únicos para Respuesta a Infección:", length(genes_diana_inf), "\n\n")
+
+# Guardar las tablas filtradas por si necesitas revisarlas en Excel
+write.csv(dianas_basal, "Dianas_Filtradas_Fenotipo_Basal.csv", row.names = FALSE)
+write.csv(dianas_inf, "Dianas_Filtradas_Infeccion_Viral.csv", row.names = FALSE)
+
+
+# ===================================================================
+# 8. ANÁLISIS DE ENRIQUECIMIENTO GO (topGO a nivel de Gene_Base)
+# ===================================================================
+cat(">>>> INICIANDO PUNTO 8: Análisis de Enriquecimiento GO...\n")
+library(topGO)
+
+# Asegúrate de tener instalada la librería
+if(!require(readxl)) install.packages("readxl")
+library(readxl)
+
+# Leer el archivo (aunque el sistema operativo lo muestre raro, R lo leerá bien)
+datos_go <- read_excel("parmeniaca_cv.Stella_v1.0_genes2Go.xlsx") #anotacion descargada de GDR
+# 1. Eliminar las primeras 2 filas que son basura
+datos_limpios <- datos_go[-(1:2), ]
+
+# 2. Asignar nombres correctos a las columnas
+colnames(datos_limpios) <- c("transcript_id", "GO_term", "descripcion")
+
+# 3. Eliminar filas donde el GO_term sea NA (por seguridad)
+datos_limpios <- datos_limpios[!is.na(datos_limpios$GO_term), ]
+
+# 4. Guardar como el archivo que espera tu script
+write.table(datos_limpios, "b2g.annot", sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# 5. VERIFICACIÓN: Comprueba que el archivo se guardó bien
+cat("Archivo 'b2g.annot' generado. Primeras 3 líneas del archivo:\n")
+system("head -n 3 b2g.annot")
+
+
+if(file.exists("b2g.annot")) {
+  # 8.1. Leer mapa de anotación funcional del Albaricoquero (Gen -> Términos GO)
+  annot <- read.delim("b2g.annot", header = FALSE, stringsAsFactors = FALSE)
+  colnames(annot) <- c("transcript_id", "GO_term", "descripcion")
+  
+  # Asegurar correspondencia: limpiar nombres en la anotación si tuvieran transcript_id largos
+  annot$gene_id <- gsub("\\.t.*", "", annot$transcript_id)
+  annot_unique <- unique(annot[, c("gene_id", "GO_term")])
+  
+  # Crear la lista formal de mapeo que exige topGO: gene_id -> GO_terms
+  geneID2GO <- by(annot_unique$GO_term, annot_unique$gene_id, function(x) unique(x))
+  geneID2GO <- as.list(geneID2GO)
+  
+  # 8.2. Definir el Universo de genes (todos los genes del albaricoquero que tienen anotación GO)
+  universo_genes <- names(geneID2GO)
+  
+  # 8.3. Función interna para automatizar topGO por contraste
+  ejecutar_topGO_targets <- function(genes_diana_interes, nombre_contraste) {
+    if(length(genes_diana_interes) == 0) {
+      cat("AVISO: No hay genes diana para", nombre_contraste, ". Saltando...\n")
+      return(NULL)
+    }
+    
+    # Vector binario (factor): 1 si el gen del universo es una diana significativa, 0 si no
+    geneList <- factor(as.integer(universo_genes %in% genes_diana_interes))
+    names(geneList) <- universo_genes
+    
+    # Crear objeto topGO data
+    GOdata <- new("topGOdata",
+                  description = paste("GO Enrichment Targets:", nombre_contraste),
+                  ontology = "BP", # Procesos Biológicos (el estándar para defensas)
+                  allGenes = geneList,
+                  geneSelectionFun = function(x) (x == 1),
+                  annot = annFUN.gene2GO,
+                  gene2GO = geneID2GO)
+    
+    # Correr el test de Fisher con el algoritmo 'weight01' (elimina redundancias de la ontología)
+    resultFisher <- runTest(GOdata, algorithm = "weight01", statistic = "fisher")
+    
+    # Generar tabla de resultados con los 30 términos más significativos
+    tabla_GO <- GenTable(GOdata,
+                         classicFisher = resultFisher,
+                         orderBy = "classicFisher",
+                         ranksOf = "classicFisher",
+                         topNodes = 30)
+    
+    # Exportar a CSV
+    write.csv(tabla_GO, paste0("Enriquecimiento_GO_Dianas_", nombre_contraste, ".csv"), row.names = FALSE)
+    cat("--> Archivo generado: Enriquecimiento_GO_Dianas_", nombre_contraste, ".csv\n", sep="")
+  }
+  
+  # 8.4. Lanzar el análisis para ambos grupos de dianas
+  ejecutar_topGO_targets(genes_diana_basal, "Fenotipo_Basal")
+  ejecutar_topGO_targets(genes_diana_inf, "Infeccion_Viral")
+  
+  cat("\n>>>> ¡PIPELINE BIOLÓGICO COMPLETADO CON ÉXITO! <<<<\n")
+  
+} else {
+  cat("--> ERROR: No se encuentra el archivo 'b2g.annot' en el directorio. El Punto 8 no pudo ejecutarse.\n")
+}
+
+# Asegúrate de tener ggplot2 instalado
+if(!require(ggplot2)) install.packages("ggplot2")
+library(ggplot2)
+
+generar_grafico_go <- function(nombre_contraste) {
+  archivo <- paste0("Enriquecimiento_GO_Dianas_", nombre_contraste, ".csv")
+  
+  if(file.exists(archivo)) {
+    datos <- read.csv(archivo)
+    
+    # Filtramos por significancia (ej. classicFisher < 0.05)
+    # Convertimos classicFisher a numérico por si R lo detectó como texto
+    datos$classicFisher <- as.numeric(as.character(datos$classicFisher))
+    datos_sig <- subset(datos, classicFisher < 0.05)
+    
+    if(nrow(datos_sig) > 0) {
+      # Ordenar por significancia
+      datos_sig$Term <- factor(datos_sig$Term, levels = datos_sig$Term[order(datos_sig$classicFisher)])
+      
+      p <- ggplot(datos_sig, aes(x = -log10(classicFisher), y = Term)) +
+        geom_bar(stat = "identity", fill = "steelblue") +
+        theme_minimal() +
+        labs(title = paste("Enriquecimiento GO:", nombre_contraste),
+             x = "-log10(p-valor Fisher)",
+             y = "Términos GO") +
+        theme(axis.text.y = element_text(size = 8))
+      
+      print(p)
+      ggsave(paste0("Grafico_GO_", nombre_contraste, ".png"), p, width = 8, height = 6)
+    }
+  }
+}
+
+# Ejecutar para tus dos contrastes
+generar_grafico_go("Fenotipo_Basal")
+generar_grafico_go("Infeccion_Viral")
+
+# ===================================================================
+# 9. VISUALIZACIÓN AVANZADA: VOLCANO PLOTS Y RESUMEN DE REGULACIÓN
+# ===================================================================
+cat(">>>> GENERANDO VISUALIZACIONES ADICIONALES (Volcano & Barplot)...\n")
+
+# Instalamos EnhancedVolcano si no está presente
+if (!requireNamespace("EnhancedVolcano", quietly = TRUE)) {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+  BiocManager::install("EnhancedVolcano")
+}
+library(EnhancedVolcano)
+library(ggplot2)
+
+# --- A. FUNCIÓN PARA VOLCANO PLOT ---
+generar_volcano <- function(res_objeto, nombre_titulo, nombre_archivo) {
+  p <- EnhancedVolcano(res_objeto,
+                       lab = rownames(res_objeto),
+                       x = 'log2FoldChange',
+                       y = 'padj',
+                       title = nombre_titulo,
+                       pCutoff = 0.05,
+                       FCcutoff = 1.0,
+                       pointSize = 2.0,
+                       labSize = 3.0,
+                       col = c('grey30', 'forestgreen', 'royalblue', 'red2'),
+                       colAlpha = 0.4)
+  
+  ggsave(paste0("QC_Plots/", nombre_archivo, ".png"), p, width = 8, height = 7)
+}
+
+# Ejecución de Volcano Plots
+generar_volcano(res_basal, "Volcano: Fenotipo Basal (R vs S)", "Volcano_Basal")
+generar_volcano(res_inf, "Volcano: Infección Viral", "Volcano_Infeccion")
+
+# --- B. FUNCIÓN PARA GRÁFICO DE BARRAS (UP/DOWN) ---
+# Primero, preparamos los datos
+resumen_data <- data.frame(
+  Comparacion = rep(c("Basal", "Infeccion"), each = 2),
+  Tipo = rep(c("UP", "DOWN"), 2),
+  Cantidad = c(nrow(read.csv("Fenotipo_Basal_UP.csv")), 
+               nrow(read.csv("Fenotipo_Basal_DOWN.csv")),
+               nrow(read.csv("Infeccion_Viral_UP.csv")),
+               nrow(read.csv("Infeccion_Viral_DOWN.csv")))
+)
+
+p_barras <- ggplot(resumen_data, aes(x = Comparacion, y = Cantidad, fill = Tipo)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  scale_fill_manual(values = c("UP" = "firebrick", "DOWN" = "steelblue")) +
+  labs(title = "Distribución de sRNAs diferencialmente expresados",
+       y = "Número de sRNAs", x = "Comparación") +
+  geom_text(aes(label = Cantidad), vjust = -0.5, position = position_dodge(0.9))
+
+ggsave("QC_Plots/Resumen_UP_DOWN.png", p_barras, width = 6, height = 5)
+
+cat("--> Visualizaciones guardadas en la carpeta 'QC_Plots'.\n")
+
+# ===================================================================
+# 10. SCRIPT PARA GENERAR LA RED DE INTERACCIÓN miRNA-TARGET (EXPECTATION <= 3.0) (FIGURA 11)
+# ===================================================================
+
+library(igraph)
+library(ggraph)
+library(tidygraph)
+library(tidyverse)
+
+# 1. Carga de datos y APLICACIÓN DEL FILTRO DE AFINIDAD
+raw_data <- read_tsv("psRNATargetJob-1783076072097223.txt", comment = "#", 
+                     col_names = c("miRNA_Acc", "Target_Acc", "Expectation", "UPE", 
+                                   "miRNA_start", "miRNA_end", "Target_start", "Target_end", 
+                                   "Inhibition", "Target_Desc"))
+
+# Filtramos para quedarnos solo con las dianas más fuertes (E <= 3.0)
+edges <- raw_data %>% 
+  filter(Expectation <= 3.0) %>% 
+  select(from = miRNA_Acc, to = Target_Acc) %>% 
+  distinct()
+
+# Si tras el filtro alguna accesión se queda fuera, el script la manejará correctamente
+nodes_mirna <- data.frame(name = unique(edges$from), type = "miRNA")
+nodes_target <- data.frame(name = unique(edges$to), type = "Target")
+nodes <- rbind(nodes_mirna, nodes_target)
+
+network_data <- tbl_graph(nodes = nodes, edges = edges, directed = TRUE)
+
+# 2. Renderizado de la Red Filtrada (Layout por fuerzas Fruchterman-Reingold)
+red_filtrada <- ggraph(network_data, layout = "fr") + 
+  # Líneas de conexión elegantes
+  geom_edge_link(alpha = 0.25, color = "grey40", width = 0.5) +
+  # Nodos (miRNAs más grandes que los targets)
+  geom_node_point(aes(color = type), size = ifelse(nodes$type == "miRNA", 6, 2.5), show.legend = TRUE) +
+  # Etiquetas para miRNAs (Texto claro y destacado)
+  geom_node_text(aes(label = ifelse(type == "miRNA", name, "")),
+                 repel = TRUE, size = 3.8, fontface = "bold", color = "black", box.padding = 0.5) +
+  # Etiquetas para los Targets (Letra pequeña pero ya legible gracias al filtro)
+  geom_node_text(aes(label = ifelse(type == "Target", name, "")),
+                 repel = TRUE, size = 2.2, color = "grey20", max.overlaps = 50) +
+  # Colores académicos
+  scale_color_manual(values = c("miRNA" = "#d9383a", "Target" = "#2c7bb6"), name = "Elemento") +
+  labs(title = "Red de Regulación Postranscripcional de Alta Afinidad",
+       subtitle = "Interacciones miRNA-Target estrictas (Expectation <= 3.0) en Albaricoquero") +
+  theme_graph() +
+  theme(plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+        plot.subtitle = element_text(size = 10, hjust = 0.5, face = "italic"),
+        legend.position = "bottom")
+
+# 3. Exportamos en un lienzo cuadrado equilibrado
+png("QC_Plots/Red_miRNA_Targets_Filtrada.png", width = 1100, height = 1100, res = 150)
+print(red_filtrada)
+dev.off()
+
+cat("¡Perfecto! La red optimizada de alta confianza se ha guardado en 'QC_Plots/Red_miRNA_Targets_Filtrada.png'.\n")
+
+#====================================================================
+# 11. VISUALIZACIÓN DE REDES FILTRADAS (iGraph + gGraph)
+# Objetivo: Representar solo las interacciones de miRNAs diferencialmente expresados
+# ===================================================================
+cat(">>>> INICIANDO PUNTO 11: Generación de Redes Filtradas...\n")
+
+library(tidygraph)
+library(ggraph)
+
+# 1. Definir los miRNAs significativos globales (aquellos que son DE)
+miRNAs_DE_basal <- rownames(res_basal_signif)
+miRNAs_DE_inf   <- rownames(res_inf_signif)
+
+# 2. Filtrar las dianas específicamente para los miRNAs DE
+# Esto reduce drásticamente el ruido visual
+red_basal_data <- subset(dianas_filtradas, miRNA_Acc. %in% miRNAs_DE_basal)
+red_inf_data   <- subset(dianas_filtradas, miRNA_Acc. %in% miRNAs_DE_inf)
+
+# 3. Función para crear y graficar la red
+plot_red_filtrada <- function(data_red, nombre_titulo, nombre_archivo) {
+  if(nrow(data_red) == 0) {
+    cat("AVISO: No hay datos de red para", nombre_titulo, "\n")
+    return(NULL)
+  }
+  
+  # Crear grafo
+  edges <- data.frame(from = data_red$miRNA_Acc., to = data_red$Gene_Base)
+  red <- as_tbl_graph(edges, directed = TRUE)
+  
+  # Asignar tipo (miRNA o Target)
+  red <- red %>%
+    activate(nodes) %>%
+    mutate(type = ifelse(name %in% data_red$miRNA_Acc., "miRNA", "Target"))
+  
+  # Dibujar
+  p <- ggraph(red, layout = 'kk') + 
+    geom_edge_link(alpha = 0.2, color = "gray50") +
+    geom_node_point(aes(color = type), size = 3) +
+    geom_node_text(aes(label = ifelse(type == "miRNA", name, "")), 
+                   repel = TRUE, size = 3, fontface = "bold") +
+    theme_void() +
+    labs(title = nombre_titulo) +
+    theme(legend.position = "bottom")
+  
+  ggsave(paste0("QC_Plots/", nombre_archivo, ".png"), p, width = 10, height = 10)
+  cat("--> Red generada:", nombre_archivo, "\n")
+}
+
+# 4. Ejecutar
+plot_red_filtrada(red_basal_data, "Red de Regulación: Fenotipo Basal", "Red_Basal_Filtrada")
+plot_red_filtrada(red_inf_data, "Red de Regulación: Infección Viral", "Red_Infeccion_Filtrada")
+
+cat(">>>> ¡ANÁLISIS DE REDES COMPLETADO! Revisa 'QC_Plots'.\n")
+
+# ===================================================================
+# 12. INTEGRACIÓN FINAL: Mis Genes -> Sus miRNAs -> GOs de esos miRNAs
+# ===================================================================
+cat(">>>> INICIANDO PUNTO 12: Integración de genes, miRNAs y GOs...\n")
+
+# 1. Cargar lista de genes (igual que antes)
+if (file.exists("genes_candidatos.txt")) {
+  lista_genes_file <- read.table("genes_candidatos.txt", header = FALSE, stringsAsFactors = FALSE)
+  mis_genes_candidatos <- lista_genes_file$V1
+} else {
+  stop("¡Archivo 'genes_candidatos.txt' no encontrado!")
+}
+
+# 2. Cargar base de datos de interacciones
+dianas_completas <- read.table("psRNATargetJob-1783076072097223.txt", 
+                               header = TRUE, sep = "\t", comment.char = "#", quote = "")
+dianas_completas$Gene_Base <- gsub("\\.t.*", "", dianas_completas$Target_Acc.)
+
+# 3. Obtener TODAS las dianas de tus genes candidatos
+dianas_de_mis_genes <- subset(dianas_completas, Gene_Base %in% mis_genes_candidatos)
+
+# 4. Integrar con anotaciones GO 
+# (Asumiendo que 'annot_unique' contiene la info de genes y sus GOs)
+resultado_con_go <- merge(dianas_de_mis_genes, annot_unique, 
+                          by.x = "Gene_Base", 
+                          by.y = "gene_id", 
+                          all.x = TRUE)
+
+# 5. Agrupar resultados: 
+# Ahora vemos qué miRNAs regulan a cada gen y qué funciones (GO) tiene ese gen
+tabla_final_gen_go <- aggregate(GO_term ~ Gene_Base + miRNA_Acc. + Expectation, 
+                                data = resultado_con_go, 
+                                FUN = function(x) paste(unique(x), collapse = " | "))
+
+# 6. (OPCIONAL) Identificar cuáles de esos miRNAs son DE
+# Esto te permitirá resaltar en tu memoria cuáles de estas regulaciones son importantes
+tabla_final_gen_go$es_DE <- ifelse(tabla_final_gen_go$miRNA_Acc. %in% rownames(res_inf_signif), "SI", "NO")
+
+# 7. Guardar y mostrar
+write.csv(tabla_final_gen_go, "Resumen_Genes_miRNAs_GO.csv", row.names = FALSE)
+
+cat("--> Integración completada. Se han encontrado", nrow(tabla_final_gen_go), "interacciones.\n")
+cat("--> Revisa el archivo 'Resumen_Genes_miRNAs_GO.csv'. La columna 'es_DE' indica si el miRNA es diferencial.\n")
