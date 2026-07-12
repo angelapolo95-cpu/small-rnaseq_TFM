@@ -1,0 +1,13 @@
+sample	accesion	genotype	phenotype	PPV
+CA_1	CA	SS	S	negative
+CA_2	CA	SS	S	negative
+CA_3	CA	SS	S	negative
+GO_1	GO	RS	R	negative
+GO_2	GO	RS	R	negative
+GO_3	GO	RS	R	negative
+GOCA_1	GOCA	SS	S	positive
+GOCA_2	GOCA	SS	S	positive
+GOCA_3	GOCA	SS	S	positive
+DRMN_1	DRMN	RR	R	negative
+DRMN_2	DRMN	RR	R	negative
+DRMN_3	DRMN	RR	R	negative
