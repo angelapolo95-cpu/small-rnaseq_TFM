@@ -35,7 +35,7 @@ cat(">>>> Cargando matrices de datos...\n")
 conteos_total   <- read.table("matriz_final.txt", header = TRUE, row.names = 1, sep = "\t", check.names = FALSE)
 muestras_total  <- read.table("samples.txt", header = TRUE, row.names = 1, sep = "\t", check.names = FALSE)
 
-# Alineación crítica: Reordenar las columnas de la matriz para que coincidan EXACTAMENTE con las filas del diseño
+# Alineación crítica: Reordenar las columnas de la matriz para que coincidan con las filas del diseño
 conteos_total <- conteos_total[, rownames(muestras_total)]
 
 # Control de calidad inicial
@@ -79,6 +79,7 @@ write.csv(as.data.frame(res_basal_signif), file = "sRNAs_Significativos_Fenotipo
 
 cat("--> Comparación 1 completada con éxito.\n")
 cat("    Total sRNAs significativos basales detectados:", nrow(res_basal_signif), "\n\n")
+
 #====================================================================
 # COMPARACIÓN 2: RESPUESTA A LA INFECCIÓN VIRAL (Infectado vs Sano en Susceptibles)
 # Objetivo: Descubrir qué sRNAs se activan o reprimen drásticamente por el ataque del virus.
@@ -114,10 +115,8 @@ write.csv(as.data.frame(res_inf_signif), file = "sRNAs_Significativos_Infeccion_
 
 cat("--> Comparación 2 completada con éxito.\n")
 cat("    Total sRNAs significativos por infección detectados:", nrow(res_inf_signif), "\n\n")
-
-cat("==============================================================\n")
 cat("¡PROCESAMIENTO TERMINADO! Revisa tu carpeta de trabajo para ver tus archivos .csv\n")
-cat("==============================================================\n")
+
 # ===================================================================
 # 3. CONTROL DE CALIDAD GLOBAL (QC)
 #====================================================================
@@ -147,15 +146,15 @@ dev.off()
 if(!require(ggrepel)) install.packages("ggrepel")
 library(ggrepel)
 
-# 1. Extraemos los datos calculados del PCA sin dibujarlos directamente
+# Extraemos los datos calculados del PCA sin dibujarlos directamente
 pcaData <- plotPCA(vsd, intgroup = c("phenotype", "PPV"), returnData = TRUE)
 
 # Nota: DESeq2 guarda automáticamente el nombre de cada muestra (CA_1, GOCA_3, etc.) en una columna llamada "name" dentro de este objeto pcaData.
 
-# 2. Calculamos los porcentajes de varianza para los ejes (opcional, pero robustece el gráfico)
+# Calculamos los porcentajes de varianza para los ejes (opcional, pero robustece el gráfico)
 percentVar <- round(100 * attr(pcaData, "percentVar"))
 
-# 3. Construimos el gráfico con ggplot2 añadiendo las etiquetas de texto
+# Construimos el gráfico con ggplot2 añadiendo las etiquetas de texto
 pca_custom <- ggplot(pcaData, aes(x = PC1, y = PC2, color = phenotype, shape = PPV)) +
   geom_point(size = 4) + # Dibuja los puntos biológicos un poco más grandes
   geom_text_repel(aes(label = name), 
@@ -170,7 +169,7 @@ pca_custom <- ggplot(pcaData, aes(x = PC1, y = PC2, color = phenotype, shape = P
   theme_minimal() +
   theme(plot.title = element_text(face = "bold", size = 14, hjust = 0.5))
 
-# 4. Exportamos el nuevo gráfico interactivo a tu carpeta de Control de Calidad
+# Exportamos el nuevo gráfico interactivo a tu carpeta de Control de Calidad
 png("QC_Plots/PCA_plot_etiquetado.png", width = 800, height = 600, res = 120)
 print(pca_custom)
 dev.off()
