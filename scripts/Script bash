@@ -1,45 +1,48 @@
 1.	Instalación de programas  
-Trimmomatic 0.40  
-Cutadapt  
-Fastx_collapser  
+-	Trimmomatic 0.40  
+-	Cutadapt  
+-	Fastx_collapser  
  
-2.	Preprocesamiento (el script hace algo raro asi que lo hago a mano), excepto la parte de trimmomatic  
-Trimmomatic SE –threads ....(lo que ponga en el script de preprocesamiento.sh que hay dentro de garg_22) 
-Cutadapt tb siguiendo el script  
+2.	Preprocesamiento (preprocesamiento.sh)  Trimmomatic y Cutadapt
+
+3.	Colapsado de secuencias
 > cat *.cleaned.polyAtrimmed.fq > combined_reads.fq 
 #aqui entro dentro de la carpeta 02_clean 
-> cat combined_reads.fq | paste - - - - | sed 's/^@/>/g' | cut -f 1,2 | tr '\t' '\n' > combined_reads.fa (esto estaba mal porque el .fa era igual que .fq, al hacerlo por separado ya sale bien) 
+> cat combined_reads.fq | paste - - - - | sed 's/^@/>/g' | cut -f 1,2 | tr '\t' '\n' > combined_reads.fa 
 > fastx_collapser -i combined_reads.fa -o unique_tags.fa 
 > sed -i 's/-/_x/' unique_tags.fa 
- 
-#mapeo para eliminar rRNA, tRNA, snRNA, snoRNA y secuencias repetitivas 
+
+4.	Mapeo para eliminar rRNA, tRNA, snRNA y snoRNA
 > bowtie-build ../../db/rfam.fa ../../db/rfam (tarda bastante rato) 
-> bowtie ../../db/rfam -f unique_tags.fa -S unique_tags.ncRNA.sam --un unique_tags.unaligned.ncRNA.fa 
+>bowtie ../../db/rfam -f unique_tags.fa -S unique_tags.ncRNA.sam --un 
+unique_tags.unaligned.ncRNA.fa 
+
+5.	Mapeo para eliminar secuencias repetitivas
 > bowtie-build ../../db/repeats.fa ../../db/repeats 
-> bowtie ../../db/repeats -f unique_tags.unaligned.ncRNA.fa -S unique_tags.unaligned.ncRNA.repeats.sam --un unique_tags.filtered.fa 
- 
-3.	Identificación de miRNAs  conocidos  
+> bowtie ../../db/repeats -f unique_tags.unaligned.ncRNA.fa -S 
+unique_tags.unaligned.ncRNA.repeats.sam --un unique_tags.filtered.fa
+
+6.	Identificación mi miRNAs conocidos
 > bowtie-build ../../db/mirbaseppe.fa ../../db/mirbase_ppe 
 > bowtie ../../db/mirbase -n 2 -f unique_tags.filtered.fa -S unique_tags.filtered.mirbase.n2.sam --un forNovelPrediction.n2.fa (numero de mismatches –n 2, se puede cambiar) 
-> bowtie ../../db/mirbase -n 3 -f unique_tags.filtered.fa -S unique_tags.filtered.mirbase.n3.sam --un forNovelPrediction.n3.fa (numero de mismatches –n 2, se puede cambiar) #voy a probar con –n 2 y con –n3 a ver si hay mucha diferencia en los known_miRNAs.txt  
-> grep -v "^@" unique_tags.filtered.mirbase.sam | awk -F"\t" '{if($3!="*") print}' | cut -f 1,3 | sort -u > known_miRNAs.n2.txt 
+> bowtie ../../db/mirbase -n 3 -f unique_tags.filtered.fa -S unique_tags.filtered.mirbase.n3.sam --un forNovelPrediction.n3.fa (numero de mismatches –n 2, se puede cambiar) #voy a probar con –n 2 y con –n3 a ver si hay mucha diferencia en los known_miRNAs.txt, sigo con -n 2 
+> grep -v "^@" unique_tags.filtered.mirbase.n2.sam | awk -F"\t" '{if($3!="*") print}' | cut -f 1,3 | sort -u > known_miRNAs.n2.txt 
  
 4.	Identificación de nuevos miRNAs  
-Entro en la carpeta 03_novel_miRNA 
-# 
-#crear indice genoma combinado albaricoque + ppv 
-> sed –i ‘s/>\([^ ]\)./\>\1/’ prunus_ppv_combined.fa (para dejar el nombre de PPV de la cabecera solo como LT600779.1) 
+# Carpeta 03_novel_miRNA 
+# Crear indice genoma combinado albaricoque + ppv 
+> sed –i ‘s/>\([^ ]\)./\>\1/’ prunus_ppv_combined.fa #para dejar el nombre de PPV de la cabecera solo como LT600779.1
 > bowtie-build prunus_ppv_combined.fa prunus_ppv_combined 
-#mapear los desconocidos y generar el formato ARF 
-mapper.pl ../02_clean/forNovelPrediction.fa \ 
+# Mapear los desconocidos y generar el formato ARF
+> mapper.pl ../02_clean/forNovelPrediction.fa \ 
           -c –i –j –l 18\ 
           -p prunus_ppv_combined \ 
           -s reads_collapsed.fa \ 
           -t reads_vs_genome.arf \ 
           -v  
-(Coge tus secuencias limpias -c, las mapea contra tu índice combinado -p, y te genera el archivo .arf -t que contiene las coordenadas genómicas donde ha encajado cada lectura) 
-#lanzar prediccion miRNAs con miRDeep2 
-miRDeep2.pl forNovelPrediction_ready.fa \ 
+
+5.	Predicción de nuevos miRNAs con miRDeep2 
+> miRDeep2.pl forNovelPrediction_ready.fa \ 
             prunus_ppv_combined.fa \ 
             forNovelPrediction_mapped.arf \ 
             none \ 
@@ -47,58 +50,49 @@ miRDeep2.pl forNovelPrediction_ready.fa \
             none \ 
             2> reporte_novel_miRNAs.log 
  
- 
-5.	 He hecho un fasta a partir de los known_miRNAs y eso lo he juntado con los novel_mature para usarlo de base de datos y mapear contra las lecturas .cleaned.polyAtrimmed.fq  
-History 1178 (para cambiar U por T en fichero db_known_ppe_novel_T.fa (que es la base de datos de miRNAs conocidos y nuevos que se han detectado) 
-History 1180 construccion del indice --> bowtie-build db_known_ppe_novel_T.fa db_known_novel 
- 
-Dentro de la carptera 04_DEG genero dos scripts para hacer el proceos automatizado:  
+6.	Unir known_miRNAs con novel_mature_miRNAs para usar como base de datos y mapear las lecturas *.cleaned.polyAtrimmed.fq para crear la matriz de conteos. Lo automatizo con los scripts mapeos.sh seguido de matriz_conteos.sh
 •	bash mapeos.sh 
 #!/bin/bash 
-  
 # Este script procesa todos los archivos .fq en el directorio actual 
-# Requisito: Tenerbowtie, samtools y el índice 'all_miRNAs' preparados. 
+# Requisito: Tener bowtie, samtools y el índice 'all_miRNAs' preparados. 
 input_dir="../02_clean" 
   
 for file in "$input_dir"/*.cleaned.polyAtrimmed.fq; do 
-    # Extraer el nombre base del archivo (sin la extensión .fq) 
-    base=$(basename "$file" .cleaned.polyAtrimmed.fq) 
+ 	# Extraer el nombre base del archivo (sin la extensión .fq) 
+   	base=$(basename "$file" .cleaned.polyAtrimmed.fq) 
+     	echo "Procesando: $base..." 
   
-    echo "Procesando: $base..." 
+# Alineamiento con Bowtie 
+ 	bowtie db_known_novel --best -v 2 -q "$file" -S "${base}.sam" 
   
-    # 1. Alineamiento con Bowtie 
-    bowtie db_known_novel --best -v 2 -q "$file" -S "${base}.sam" 
+    	# Conversión a BAM, ordenado y creación de índice 
+   	samtools view -bS "${base}.sam" | samtools sort -o "${base}.bam" -O bam - 
+    	samtools index "${base}.bam" 
   
-    # 2. Conversión a BAM, ordenado y creación de índice 
-    samtools view -bS "${base}.sam" | samtools sort -o "${base}.bam" -O bam - 
-    samtools index "${base}.bam" 
+    	# Generación de conteos 
+    	samtools idxstats "${base}.bam" | cut -f 1,3 > "${base}.counts.txt" 
   
-    # 3. Generación de conteos 
-    samtools idxstats "${base}.bam" | cut -f 1,3 > "${base}.counts.txt" 
+    	# Opcional: Eliminar el archivo .sam para ahorrar espacio 
+    	rm "${base}.sam" 
   
-    # Opcional: Eliminar el archivo .sam para ahorrar espacio 
-    rm "${base}.sam" 
-  
-    echo "Finalizado: $base" 
+    	echo "Finalizado: $base" 
 done 
-  
-echo "¡Todos los archivos han sido procesados correctamente!" 
+  echo "¡Todos los archivos han sido procesados correctamente!" 
  
 •	bash matriz_conteos.sh 
 #!/bin/bash 
   
-# 1. Crear un archivo temporal con la lista de todos los miRNAs únicos 
-# y ordenarlos alfabéticamente 
+# Crear un archivo temporal con la lista de todos los miRNAs únicos y ordenarlos alfabéticamente 
 cut -f1 *.counts.txt | sort | uniq > todos_los_mirnas.txt 
   
-# 2. Crear la cabecera del archivo final 
+# Crear la cabecera del archivo final 
 echo -n "miRNA" > matriz_final.txt 
 for f in *.counts.txt; do 
-    echo -ne "\t$(basename "$f" .counts.txt)" >> matriz_final.txt 
-done 
-echo "" >> matriz_final.txt 
+    	echo -ne "\t$(basename "$f" .counts.txt)" >> matriz_final.txt 
+      done 
+      echo "" >> matriz_final.txt 
   
-# 3. Rellenar la matriz 
+# Rellenar la matriz 
 # Usamos un bucle que recorre la lista de miRNAs y busca en cada archivo 
 while read -r mirna; do 
     echo -n "$mirna" >> matriz_final.txt 
@@ -110,12 +104,11 @@ while read -r mirna; do
     echo "" >> matriz_final.txt 
 done < todos_los_mirnas.txt 
   
-# Limpieza 
-rm todos_los_mirnas.txt 
-  
 echo "Matriz generada: matriz_final.txt" 
-Compruebo que la matriz está bien mirando algún miRNA 
+# Compruebo que la matriz está bien mirando algún miRNA 
 > grep “cNN1_1990” *.counts* 
  
-6.	Analisis de expresión diferencial con DESeq2 
+7.	Análisis de expresión diferencial con DESeq2. En el siguiente anexo se detalla el script de R (Análisis_RStudio)
+ 
+
  
